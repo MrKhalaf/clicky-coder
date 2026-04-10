@@ -11,13 +11,14 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class ElevenLabsTTSClient {
+final class ElevenLabsTTSClient: NSObject, AVAudioPlayerDelegate {
     private let proxyURL: URL
     private let session: URLSession
 
     /// The audio player for the current TTS playback. Kept alive so the
     /// audio finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
+    private var playbackContinuation: CheckedContinuation<Void, Error>?
 
     init(proxyURL: String) {
         self.proxyURL = URL(string: proxyURL)!
@@ -26,11 +27,14 @@ final class ElevenLabsTTSClient {
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: configuration)
+        super.init()
     }
 
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
-    /// Throws on network or decoding errors. Cancellation-safe.
-    func speakText(_ text: String) async throws {
+    /// Resolves only after playback finishes or is cancelled.
+    func speak(_ text: String, onPlaybackStarted: (() -> Void)? = nil) async throws {
+        stopPlayback()
+
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -63,9 +67,31 @@ final class ElevenLabsTTSClient {
         try Task.checkCancellation()
 
         let player = try AVAudioPlayer(data: data)
+        player.delegate = self
         self.audioPlayer = player
-        player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.playbackContinuation = continuation
+                let didStartPlayback = player.play()
+                guard didStartPlayback else {
+                    self.playbackContinuation = nil
+                    self.audioPlayer = nil
+                    continuation.resume(throwing: NSError(
+                        domain: "ElevenLabsTTS",
+                        code: -2,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to start audio playback"]
+                    ))
+                    return
+                }
+
+                print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+                onPlaybackStarted?()
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.stopPlayback()
+            }
+        }
     }
 
     /// Whether TTS audio is currently playing back.
@@ -77,5 +103,43 @@ final class ElevenLabsTTSClient {
     func stopPlayback() {
         audioPlayer?.stop()
         audioPlayer = nil
+        resolvePlaybackContinuation(with: CancellationError())
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        audioPlayer = nil
+        if flag {
+            resolvePlaybackContinuation()
+        } else {
+            resolvePlaybackContinuation(
+                with: NSError(
+                    domain: "ElevenLabsTTS",
+                    code: -3,
+                    userInfo: [NSLocalizedDescriptionKey: "Audio playback ended unsuccessfully"]
+                )
+            )
+        }
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        audioPlayer = nil
+        resolvePlaybackContinuation(
+            with: error ?? NSError(
+                domain: "ElevenLabsTTS",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "Audio decoding failed"]
+            )
+        )
+    }
+
+    private func resolvePlaybackContinuation(with error: Error? = nil) {
+        guard let playbackContinuation else { return }
+        self.playbackContinuation = nil
+
+        if let error {
+            playbackContinuation.resume(throwing: error)
+        } else {
+            playbackContinuation.resume()
+        }
     }
 }

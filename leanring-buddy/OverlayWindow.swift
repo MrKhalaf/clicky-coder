@@ -669,6 +669,7 @@ struct BlueCursorView: View {
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
+        companionManager.notifyDetectedElementNavigationFinished()
         companionManager.clearDetectedElementLocation()
     }
 

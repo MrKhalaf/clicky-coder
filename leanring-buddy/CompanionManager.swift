@@ -21,6 +21,29 @@ enum CompanionVoiceState {
     case responding
 }
 
+enum TourSessionMode {
+    case narrating
+    case awaitingUser
+    case answeringFollowUp
+}
+
+enum TourSessionEndReason {
+    case completed
+    case cancelled
+    case failed
+}
+
+struct ActiveTourSession {
+    let packet: TourPacket
+    var currentStepIndex: Int
+    var mode: TourSessionMode
+    let overlayWasVisibleBeforeTour: Bool
+
+    var currentStep: TourStep {
+        packet.outline[currentStepIndex]
+    }
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -41,6 +64,7 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    @Published private(set) var activeTourSession: ActiveTourSession?
 
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
@@ -61,6 +85,7 @@ final class CompanionManager: ObservableObject {
 
     private var onboardingMusicPlayer: AVAudioPlayer?
     private var onboardingMusicFadeTimer: Timer?
+    private var navigationCompletionContinuation: CheckedContinuation<Void, Never>?
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
@@ -70,7 +95,7 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static let workerBaseURL = "http://localhost:8787"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -87,6 +112,9 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    private var currentResponseTaskID: UUID?
+    private var activeManagedResponseTask: Task<Void, Error>?
+    private var activeManagedResponseTaskID: UUID?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -96,6 +124,7 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    var onTourSessionEnded: ((TourPacket, TourSessionEndReason) -> Void)?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -110,10 +139,163 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
+    var isTourActive: Bool {
+        activeTourSession != nil
+    }
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    func startTourSession(packet: TourPacket) {
+        guard !packet.outline.isEmpty else { return }
+
+        stopTourSession(reason: .cancelled, shouldSpeakClosingLine: false)
+        cancelInFlightResponse()
+
+        let overlayWasVisibleBeforeTour = isOverlayVisible
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        activeTourSession = ActiveTourSession(
+            packet: packet,
+            currentStepIndex: 0,
+            mode: .narrating,
+            overlayWasVisibleBeforeTour: overlayWasVisibleBeforeTour
+        )
+
+        ClickyAnalytics.trackTourStarted(packetID: packet.packetId, stepCount: packet.outline.count)
+
+        Task {
+            do {
+                try await runTourStep()
+            } catch {
+                print("⚠️ Tour step failed: \(error)")
+                stopTourSession(reason: .failed)
+            }
+        }
+    }
+
+    func runTourStep() async throws {
+        guard let session = activeTourSession else { return }
+
+        activeTourSession?.mode = .narrating
+        let currentStep = session.currentStep
+        let userPrompt = """
+        recap step \(session.currentStepIndex + 1) of \(session.packet.outline.count). explain what changed on this screen, point at the most relevant thing if you can see it, and keep it tight.
+        """
+
+        try await runManagedResponse {
+            try await self.performCompanionResponse(
+                transcript: "tour step \(session.currentStepIndex + 1)",
+                userPrompt: userPrompt,
+                systemPrompt: self.makeTourSystemPrompt(for: session, followUpQuestion: nil),
+                conversationHistory: [],
+                shouldPersistConversation: false
+            )
+        }
+
+        guard activeTourSession != nil else { return }
+        activeTourSession?.mode = .awaitingUser
+    }
+
+    func advanceTourStep() async {
+        guard let session = activeTourSession else { return }
+
+        if session.currentStepIndex + 1 >= session.packet.outline.count {
+            stopTourSession(reason: .completed)
+            return
+        }
+
+        activeTourSession?.currentStepIndex += 1
+        ClickyAnalytics.trackTourStepAdvanced(
+            packetID: session.packet.packetId,
+            stepID: session.packet.outline[session.currentStepIndex + 1].id,
+            stepIndex: session.currentStepIndex + 2
+        )
+
+        do {
+            try await runTourStep()
+        } catch {
+            print("⚠️ Advance tour step failed: \(error)")
+            stopTourSession(reason: .failed)
+        }
+    }
+
+    func repeatTourStep() async {
+        guard activeTourSession != nil else { return }
+
+        do {
+            try await runTourStep()
+        } catch {
+            print("⚠️ Repeat tour step failed: \(error)")
+            stopTourSession(reason: .failed)
+        }
+    }
+
+    func stopTourSession(reason: TourSessionEndReason = .cancelled, shouldSpeakClosingLine: Bool = true) {
+        guard let session = activeTourSession else { return }
+
+        cancelInFlightResponse()
+        activeTourSession = nil
+
+        if !session.overlayWasVisibleBeforeTour {
+            overlayWindowManager.hideOverlay()
+            isOverlayVisible = false
+        }
+
+        switch reason {
+        case .completed:
+            ClickyAnalytics.trackTourFinished(packetID: session.packet.packetId)
+            if shouldSpeakClosingLine {
+                let synthesizer = NSSpeechSynthesizer()
+                synthesizer.startSpeaking("that's everything in this recap. ask me about any step or say stop tour.")
+            }
+        case .cancelled:
+            ClickyAnalytics.trackTourCancelled(packetID: session.packet.packetId)
+        case .failed:
+            ClickyAnalytics.trackTourCancelled(packetID: session.packet.packetId)
+        }
+
+        onTourSessionEnded?(session.packet, reason)
+    }
+
+    func handleTourTranscript(_ transcript: String) async {
+        guard let session = activeTourSession else { return }
+
+        let normalizedTranscript = Self.normalizeTourControlTranscript(transcript)
+        switch normalizedTranscript {
+        case "next", "continue":
+            await advanceTourStep()
+        case "repeat":
+            await repeatTourStep()
+        case "stop tour":
+            stopTourSession(reason: .cancelled, shouldSpeakClosingLine: false)
+        default:
+            activeTourSession?.mode = .answeringFollowUp
+
+            do {
+                try await runManagedResponse {
+                    try await self.performCompanionResponse(
+                        transcript: transcript,
+                        userPrompt: transcript,
+                        systemPrompt: self.makeTourSystemPrompt(for: session, followUpQuestion: transcript),
+                        conversationHistory: [],
+                        shouldPersistConversation: false
+                    )
+                }
+                guard activeTourSession != nil else { return }
+                activeTourSession?.mode = .awaitingUser
+            } catch {
+                print("⚠️ Tour follow-up failed: \(error)")
+                stopTourSession(reason: .failed)
+            }
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -285,6 +467,13 @@ final class CompanionManager: ObservableObject {
         detectedElementScreenLocation = nil
         detectedElementDisplayFrame = nil
         detectedElementBubbleText = nil
+        navigationCompletionContinuation?.resume()
+        navigationCompletionContinuation = nil
+    }
+
+    func notifyDetectedElementNavigationFinished() {
+        navigationCompletionContinuation?.resume()
+        navigationCompletionContinuation = nil
     }
 
     func stop() {
@@ -293,8 +482,8 @@ final class CompanionManager: ObservableObject {
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
-        currentResponseTask?.cancel()
-        currentResponseTask = nil
+        cancelInFlightResponse()
+        activeTourSession = nil
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -492,9 +681,7 @@ final class CompanionManager: ObservableObject {
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
-            clearDetectedElementLocation()
+            cancelInFlightResponse()
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -521,7 +708,14 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if self.isTourActive {
+                                await self.handleTourTranscript(finalTranscript)
+                            } else {
+                                self.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                            }
+                        }
                     }
                 )
             }
@@ -584,132 +778,21 @@ final class CompanionManager: ObservableObject {
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
-        currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        cancelInFlightResponse()
+        let responseTaskID = UUID()
+        currentResponseTaskID = responseTaskID
 
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
-            voiceState = .processing
-
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
+                try await performCompanionResponse(
+                    transcript: transcript,
                     userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
+                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    conversationHistory: conversationHistory.map {
+                        (userPlaceholder: $0.userTranscript, assistantResponse: $0.assistantResponse)
+                    },
+                    shouldPersistConversation: true
                 )
-
-                guard !Task.isCancelled else { return }
-
-                // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-                let spokenText = parseResult.spokenText
-
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
-                }
-
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
-                    )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                }
-
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
-
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
-                }
-
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    }
-                }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
@@ -722,7 +805,229 @@ final class CompanionManager: ObservableObject {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
             }
+
+            if currentResponseTaskID == responseTaskID {
+                currentResponseTask = nil
+                currentResponseTaskID = nil
+            }
         }
+    }
+
+    private func performCompanionResponse(
+        transcript: String,
+        userPrompt: String,
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        shouldPersistConversation: Bool
+    ) async throws {
+        voiceState = .processing
+
+        let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+        try Task.checkCancellation()
+
+        let labeledImages = screenCaptures.map { capture in
+            let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
+            return (data: capture.imageData, label: capture.label + dimensionInfo)
+        }
+
+        let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+            images: labeledImages,
+            systemPrompt: systemPrompt,
+            conversationHistory: conversationHistory,
+            userPrompt: userPrompt,
+            onTextChunk: { _ in
+                // No streaming text display — spinner stays until TTS plays
+            }
+        )
+
+        try Task.checkCancellation()
+
+        let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+        let spokenText = parseResult.spokenText
+        let hasPointCoordinate = parseResult.coordinate != nil
+
+        if hasPointCoordinate {
+            voiceState = .idle
+        }
+
+        setDetectedElementLocationIfNeeded(
+            from: parseResult,
+            screenCaptures: screenCaptures
+        )
+
+        if shouldPersistConversation {
+            self.conversationHistory.append((
+                userTranscript: transcript,
+                assistantResponse: spokenText
+            ))
+
+            if self.conversationHistory.count > 10 {
+                self.conversationHistory.removeFirst(self.conversationHistory.count - 10)
+            }
+
+            print("🧠 Conversation history: \(self.conversationHistory.count) exchanges")
+        }
+
+        ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+
+        if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                try await elevenLabsTTSClient.speak(spokenText) { [weak self] in
+                    self?.voiceState = .responding
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                print("⚠️ ElevenLabs TTS error: \(error)")
+                speakCreditsErrorFallback()
+            }
+        }
+
+        try Task.checkCancellation()
+
+        if hasPointCoordinate {
+            await waitForDetectedElementNavigationToFinish()
+            try Task.checkCancellation()
+        }
+    }
+
+    private func setDetectedElementLocationIfNeeded(
+        from parseResult: PointingParseResult,
+        screenCaptures: [CompanionScreenCapture]
+    ) {
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if let screenNumber = parseResult.screenNumber,
+               screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                return screenCaptures[screenNumber - 1]
+            }
+            return screenCaptures.first(where: { $0.isCursorScreen })
+        }()
+
+        if let pointCoordinate = parseResult.coordinate,
+           let targetScreenCapture {
+            let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+            let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+            let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+            let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+            let displayFrame = targetScreenCapture.displayFrame
+
+            let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+            let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+
+            let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+            let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+            let appKitY = displayHeight - displayLocalY
+
+            let globalLocation = CGPoint(
+                x: displayLocalX + displayFrame.origin.x,
+                y: appKitY + displayFrame.origin.y
+            )
+
+            detectedElementScreenLocation = globalLocation
+            detectedElementDisplayFrame = displayFrame
+            ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+            print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+        } else {
+            print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+        }
+    }
+
+    private func cancelInFlightResponse() {
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        currentResponseTaskID = nil
+        activeManagedResponseTask?.cancel()
+        activeManagedResponseTask = nil
+        activeManagedResponseTaskID = nil
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+    }
+
+    private func runManagedResponse(
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) async throws {
+        cancelInFlightResponse()
+
+        let taskID = UUID()
+        let task = Task {
+            try await operation()
+        }
+        activeManagedResponseTask = task
+        activeManagedResponseTaskID = taskID
+
+        defer {
+            if activeManagedResponseTaskID == taskID {
+                activeManagedResponseTask = nil
+                activeManagedResponseTaskID = nil
+            }
+        }
+
+        try await task.value
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
+    }
+
+    private func waitForDetectedElementNavigationToFinish() async {
+        guard detectedElementScreenLocation != nil else { return }
+
+        await withCheckedContinuation { continuation in
+            navigationCompletionContinuation = continuation
+        }
+    }
+
+    private func makeTourSystemPrompt(
+        for session: ActiveTourSession,
+        followUpQuestion: String?
+    ) -> String {
+        let changedFiles = session.packet.scope.changedFiles.joined(separator: ", ")
+        let step = session.currentStep
+
+        let followUpSection: String
+        if let followUpQuestion {
+            followUpSection = """
+
+            the user just asked a follow-up question about this step: "\(followUpQuestion)".
+            answer it using the current screenshot and stay on this same step.
+            """
+        } else {
+            followUpSection = """
+
+            walk the user through this step like a teacher showing them what changed right now.
+            """
+        }
+
+        return Self.companionVoiceResponseSystemPrompt + """
+
+        tour mode:
+        you're recapping code changes claude code just made to the project "\(session.packet.repoName)".
+        this is step \(session.currentStepIndex + 1) of \(session.packet.outline.count).
+
+        why this change exists:
+        \(session.packet.context.sessionSummary)
+
+        changed files:
+        \(changedFiles)
+
+        current step:
+        - intent: \(step.intent)
+        - navigation hint: \(step.navigationHint)
+        - look for: \(step.lookFor)
+        \(followUpSection)
+
+        extra rules:
+        - keep recap narration to one to three sentences unless the user explicitly asks for more.
+        - if the screen does not match the step, say what the user should do next and end with [POINT:none].
+        - if you can see the changed ui, point at the most relevant thing.
+        - never mention raw git diff syntax or file paths unless the user asks.
+        """
+    }
+
+    private static func normalizeTourControlTranscript(_ transcript: String) -> String {
+        transcript
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: .punctuationCharacters)
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
@@ -730,6 +1035,7 @@ final class CompanionManager: ObservableObject {
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
+        guard !isTourActive else { return }
         guard !isClickyCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()

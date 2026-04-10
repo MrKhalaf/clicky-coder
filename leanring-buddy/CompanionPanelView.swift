@@ -66,6 +66,14 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
+            if companionManager.isTourActive {
+                Spacer()
+                    .frame(height: 12)
+
+                recapActionRow
+                    .padding(.horizontal, 16)
+            }
+
             Spacer()
                 .frame(height: 12)
 
@@ -678,6 +686,41 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
+    private var recapActionRow: some View {
+        Button(action: {
+            companionManager.stopTourSession(reason: .cancelled, shouldSpeakClosingLine: false)
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "stop.circle")
+                    .font(.system(size: 12, weight: .medium))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("End Recap")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Stop the current walkthrough and return Clicky to normal mode.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+
+                Spacer()
+            }
+            .foregroundColor(DS.Colors.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
     // MARK: - Footer
 
     private var footerSection: some View {
@@ -726,6 +769,9 @@ struct CompanionPanelView: View {
     }
 
     private var statusDotColor: Color {
+        if companionManager.isTourActive {
+            return DS.Colors.blue400
+        }
         if !companionManager.isOverlayVisible {
             return DS.Colors.textTertiary
         }
@@ -742,6 +788,9 @@ struct CompanionPanelView: View {
     private var statusText: String {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
+        }
+        if companionManager.isTourActive {
+            return "Recapping"
         }
         if !companionManager.isOverlayVisible {
             return "Ready"

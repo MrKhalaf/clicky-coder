@@ -103,6 +103,33 @@ enum ClickyAnalytics {
         ])
     }
 
+    static func trackTourStarted(packetID: String, stepCount: Int) {
+        PostHogSDK.shared.capture("tour_started", properties: [
+            "packet_id": packetID,
+            "step_count": stepCount
+        ])
+    }
+
+    static func trackTourStepAdvanced(packetID: String, stepID: String, stepIndex: Int) {
+        PostHogSDK.shared.capture("tour_step_advanced", properties: [
+            "packet_id": packetID,
+            "step_id": stepID,
+            "step_index": stepIndex
+        ])
+    }
+
+    static func trackTourFinished(packetID: String) {
+        PostHogSDK.shared.capture("tour_finished", properties: [
+            "packet_id": packetID
+        ])
+    }
+
+    static func trackTourCancelled(packetID: String) {
+        PostHogSDK.shared.capture("tour_cancelled", properties: [
+            "packet_id": packetID
+        ])
+    }
+
     // MARK: - Errors
 
     /// An error occurred during the AI response pipeline.

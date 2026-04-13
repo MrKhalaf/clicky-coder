@@ -174,6 +174,14 @@ final class CompanionManager: ObservableObject {
         Task {
             do {
                 try await runTourStep()
+            } catch is CancellationError {
+                // User interrupted narration (e.g. pressed hotkey mid-response).
+                // Keep the tour alive on the current step so the next recording
+                // can still say "next" to advance.
+                guard activeTourSession != nil else { return }
+                print("🎙️ Tour step narration interrupted, staying on step \(activeTourSession?.currentStepIndex ?? -1)")
+                voiceState = .idle
+                activeTourSession?.mode = .awaitingUser
             } catch {
                 print("⚠️ Tour step failed: \(error)")
                 stopTourSession(reason: .failed)
@@ -221,6 +229,11 @@ final class CompanionManager: ObservableObject {
 
         do {
             try await runTourStep()
+        } catch is CancellationError {
+            guard activeTourSession != nil else { return }
+            print("🎙️ Tour step narration interrupted, staying on step \(activeTourSession?.currentStepIndex ?? -1)")
+            voiceState = .idle
+            activeTourSession?.mode = .awaitingUser
         } catch {
             print("⚠️ Advance tour step failed: \(error)")
             stopTourSession(reason: .failed)
@@ -232,6 +245,11 @@ final class CompanionManager: ObservableObject {
 
         do {
             try await runTourStep()
+        } catch is CancellationError {
+            guard activeTourSession != nil else { return }
+            print("🎙️ Tour step narration interrupted, staying on current step")
+            voiceState = .idle
+            activeTourSession?.mode = .awaitingUser
         } catch {
             print("⚠️ Repeat tour step failed: \(error)")
             stopTourSession(reason: .failed)
@@ -290,6 +308,11 @@ final class CompanionManager: ObservableObject {
                     )
                 }
                 guard activeTourSession != nil else { return }
+                activeTourSession?.mode = .awaitingUser
+            } catch is CancellationError {
+                guard activeTourSession != nil else { return }
+                print("🎙️ Tour follow-up interrupted, staying on current step")
+                voiceState = .idle
                 activeTourSession?.mode = .awaitingUser
             } catch {
                 print("⚠️ Tour follow-up failed: \(error)")
@@ -997,13 +1020,40 @@ final class CompanionManager: ObservableObject {
             """
         }
 
+        let isFirstStep = session.currentStepIndex == 0
+        let isLastStep = session.currentStepIndex + 1 == session.packet.outline.count
+        let nextStepHint: String
+        if isLastStep {
+            nextStepHint = "end by saying: that's the last step. ask me anything or say stop tour."
+        } else {
+            let nextStep = session.packet.outline[session.currentStepIndex + 1]
+            nextStepHint = "end by telling the user what to do next: navigate to the right screen for the next step (\(nextStep.navigationHint)), then say next to continue."
+        }
+
+        let endingInstruction: String
+        if isLastStep {
+            endingInstruction = "- end this final step by making it clear the tour is complete and the user can ask follow-up questions or say stop tour."
+        } else {
+            endingInstruction = "- always end each non-final step by telling the user what to do next, then say next."
+        }
+
+        let introSection: String
+        if isFirstStep && followUpQuestion == nil {
+            introSection = """
+
+            this is the first step. start with a brief one-sentence intro of what was built and why, then dive into this step.
+            """
+        } else {
+            introSection = ""
+        }
+
         return Self.companionVoiceResponseSystemPrompt + """
 
         tour mode:
-        you're recapping code changes claude code just made to the project "\(session.packet.repoName)".
+        you're giving the user a guided walkthrough of something that was just built in the project "\(session.packet.repoName)".
         this is step \(session.currentStepIndex + 1) of \(session.packet.outline.count).
 
-        why this change exists:
+        what was built:
         \(session.packet.context.sessionSummary)
 
         changed files:
@@ -1013,13 +1063,21 @@ final class CompanionManager: ObservableObject {
         - intent: \(step.intent)
         - navigation hint: \(step.navigationHint)
         - look for: \(step.lookFor)
+        \(introSection)
         \(followUpSection)
 
+        how to narrate:
+        - look at the screenshot carefully. describe what you actually see, not what you assume.
+        - explain the purpose and context of what's on screen — teach the user like a knowledgeable guide.
+        - point at the most important element on screen using [POINT:x,y:label].
+        - \(nextStepHint)
+
         extra rules:
-        - keep recap narration to one to three sentences unless the user explicitly asks for more.
-        - if the screen does not match the step, say what the user should do next and end with [POINT:none].
-        - if you can see the changed ui, point at the most relevant thing.
+        - aim for three to five sentences. be informative and conversational, not terse.
+        - if the screen does not show what this step expects, tell the user exactly where to navigate and point at the relevant sidebar item or tab if visible.
+        - if you can see the UI this step is about, point at the most relevant element and explain what it does.
         - never mention raw git diff syntax or file paths unless the user asks.
+        \(endingInstruction)
         """
     }
 

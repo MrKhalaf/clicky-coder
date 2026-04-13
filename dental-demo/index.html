@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DentaFlow PMS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <div class="logo-icon">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <path d="M14 2C10.5 2 8 4.5 7 7C6 9.5 6.5 12 7 14C7.5 16 8.5 20 10 24C11 26 12 26 13 24C13.5 23 14 21 14 21C14 21 14.5 23 15 24C16 26 17 26 18 24C19.5 20 20.5 16 21 14C21.5 12 22 9.5 21 7C20 4.5 17.5 2 14 2Z" fill="var(--accent)" stroke="var(--accent-dark)" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <span class="logo-text">DentaFlow</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-view="schedule">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <span>Schedule</span>
+        </a>
+        <a href="#" class="nav-item" data-view="patients">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+          <span>Patients</span>
+        </a>
+        <a href="#" class="nav-item" data-view="charting">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span>Charting</span>
+        </a>
+        <a href="#" class="nav-item" data-view="treatment">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+          <span>Treatment Plans</span>
+        </a>
+        <a href="#" class="nav-item" data-view="billing">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+          <span>Billing</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="provider-badge">
+          <div class="provider-avatar">DS</div>
+          <div class="provider-info">
+            <span class="provider-name">Dr. Sarah Chen</span>
+            <span class="provider-role">General Dentist</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title" id="pageTitle">Today's Schedule</h1>
+          <span class="page-date" id="pageDate"></span>
+        </div>
+        <div class="topbar-right">
+          <div class="search-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" placeholder="Search patients..." id="searchInput">
+          </div>
+          <button class="btn-icon" title="Notifications">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+            <span class="notif-dot"></span>
+          </button>
+          <button class="btn-primary" id="newAppointmentBtn">+ New Appointment</button>
+        </div>
+      </header>
+
+      <!-- Schedule View -->
+      <div class="view-container" id="scheduleView">
+        <div class="schedule-layout">
+          <!-- Operatories Header -->
+          <div class="schedule-grid">
+            <div class="time-gutter-header"></div>
+            <div class="operatory-headers">
+              <div class="operatory-header">
+                <span class="op-name">Op 1</span>
+                <span class="op-label">Hygiene</span>
+              </div>
+              <div class="operatory-header">
+                <span class="op-name">Op 2</span>
+                <span class="op-label">Hygiene</span>
+              </div>
+              <div class="operatory-header">
+                <span class="op-name">Op 3</span>
+                <span class="op-label">Restorative</span>
+              </div>
+              <div class="operatory-header">
+                <span class="op-name">Op 4</span>
+                <span class="op-label">Restorative</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Scrollable schedule body -->
+          <div class="schedule-body" id="scheduleBody">
+            <div class="schedule-grid-body">
+              <div class="time-gutter" id="timeGutter"></div>
+              <div class="operatory-columns" id="operatoryColumns"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Panel: Quick Patient Info -->
+        <div class="quick-panel" id="quickPanel">
+          <div class="quick-panel-empty">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+            <p>Click an appointment to view patient details</p>
+          </div>
+          <div class="quick-panel-content" id="quickPanelContent" style="display:none;">
+            <div class="qp-header">
+              <h3 id="qpName"></h3>
+              <span class="qp-id" id="qpId"></span>
+            </div>
+            <div class="qp-vitals">
+              <div class="qp-vital">
+                <span class="qp-vital-label">DOB</span>
+                <span class="qp-vital-value" id="qpDob"></span>
+              </div>
+              <div class="qp-vital">
+                <span class="qp-vital-label">Phone</span>
+                <span class="qp-vital-value" id="qpPhone"></span>
+              </div>
+              <div class="qp-vital">
+                <span class="qp-vital-label">Insurance</span>
+                <span class="qp-vital-value" id="qpInsurance"></span>
+              </div>
+              <div class="qp-vital">
+                <span class="qp-vital-label">Last Visit</span>
+                <span class="qp-vital-value" id="qpLastVisit"></span>
+              </div>
+            </div>
+            <div class="qp-section">
+              <h4>Today's Procedures</h4>
+              <div class="qp-procedures" id="qpProcedures"></div>
+            </div>
+            <div class="qp-section">
+              <h4>Alerts</h4>
+              <div class="qp-alerts" id="qpAlerts"></div>
+            </div>
+            <div class="qp-actions">
+              <button class="btn-secondary">Open Chart</button>
+              <button class="btn-secondary">Check In</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Patients View -->
+      <div class="view-container hidden" id="patientsView">
+        <div class="patients-layout">
+          <div class="patients-table-wrapper">
+            <table class="patients-table">
+              <thead>
+                <tr>
+                  <th>Patient</th>
+                  <th>ID</th>
+                  <th>DOB</th>
+                  <th>Phone</th>
+                  <th>Insurance</th>
+                  <th>Last Visit</th>
+                  <th>Balance</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="patientsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charting View -->
+      <div class="view-container hidden" id="chartingView">
+        <div class="charting-layout">
+          <div class="chart-patient-bar">
+            <div class="chart-patient-info">
+              <span class="chart-patient-name">Marcus Rivera</span>
+              <span class="chart-patient-meta">ID #10042 · DOB 03/15/1985 · Last Visit: 01/10/2026</span>
+            </div>
+            <div class="chart-tabs">
+              <button class="chart-tab active">Odontogram</button>
+              <button class="chart-tab">Perio Chart</button>
+              <button class="chart-tab">X-Rays</button>
+              <button class="chart-tab">Notes</button>
+            </div>
+          </div>
+          <div class="odontogram-container">
+            <div class="tooth-arch" id="upperArch">
+              <h4 class="arch-label">Maxillary (Upper)</h4>
+              <div class="teeth-row" id="upperTeeth"></div>
+            </div>
+            <div class="tooth-arch" id="lowerArch">
+              <h4 class="arch-label">Mandibular (Lower)</h4>
+              <div class="teeth-row" id="lowerTeeth"></div>
+            </div>
+          </div>
+          <div class="chart-legend">
+            <div class="legend-item"><span class="legend-swatch" style="background:var(--tooth-healthy)"></span>Healthy</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:var(--tooth-decay)"></span>Decay</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:var(--tooth-filling)"></span>Filling</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:var(--tooth-crown)"></span>Crown</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:var(--tooth-missing)"></span>Missing</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Treatment Plan View -->
+      <div class="view-container hidden" id="treatmentView">
+        <div class="treatment-layout">
+          <div class="treatment-header">
+            <div class="treatment-patient">
+              <span class="treatment-patient-name">Marcus Rivera</span>
+              <span class="treatment-status-badge status-active">Active Plan</span>
+            </div>
+            <button class="btn-primary">+ Add Procedure</button>
+          </div>
+          <div class="treatment-phases" id="treatmentPhases"></div>
+          <div class="treatment-totals">
+            <div class="total-row">
+              <span>Total Estimated</span>
+              <span class="total-amount">$4,280.00</span>
+            </div>
+            <div class="total-row">
+              <span>Insurance Estimate</span>
+              <span class="total-amount insurance">-$2,568.00</span>
+            </div>
+            <div class="total-row total-final">
+              <span>Patient Responsibility</span>
+              <span class="total-amount">$1,712.00</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Billing View -->
+      <div class="view-container hidden" id="billingView">
+        <div class="billing-layout">
+          <div class="billing-stats">
+            <div class="billing-stat-card">
+              <span class="stat-label">Today's Production</span>
+              <span class="stat-value">$12,450</span>
+              <span class="stat-trend up">+8.2% vs avg</span>
+            </div>
+            <div class="billing-stat-card">
+              <span class="stat-label">Collections (MTD)</span>
+              <span class="stat-value">$87,200</span>
+              <span class="stat-trend up">+3.1% vs last mo</span>
+            </div>
+            <div class="billing-stat-card">
+              <span class="stat-label">Outstanding A/R</span>
+              <span class="stat-value">$24,800</span>
+              <span class="stat-trend down">-5.4% vs last mo</span>
+            </div>
+            <div class="billing-stat-card">
+              <span class="stat-label">Claims Pending</span>
+              <span class="stat-value">23</span>
+              <span class="stat-trend neutral">4 need attention</span>
+            </div>
+          </div>
+          <div class="billing-table-section">
+            <h3>Recent Transactions</h3>
+            <table class="patients-table billing-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Patient</th>
+                  <th>Procedure</th>
+                  <th>Code</th>
+                  <th>Billed</th>
+                  <th>Insurance</th>
+                  <th>Patient Owed</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="billingTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- New Appointment Modal -->
+  <div class="modal-overlay" id="appointmentModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>New Appointment</h2>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Patient</label>
+          <input type="text" placeholder="Search patient..." class="form-input">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Date</label>
+            <input type="date" class="form-input">
+          </div>
+          <div class="form-group">
+            <label>Time</label>
+            <input type="time" class="form-input" value="09:00">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Operatory</label>
+            <select class="form-input">
+              <option>Op 1 — Hygiene</option>
+              <option>Op 2 — Hygiene</option>
+              <option>Op 3 — Restorative</option>
+              <option>Op 4 — Restorative</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Duration</label>
+            <select class="form-input">
+              <option>30 min</option>
+              <option>45 min</option>
+              <option selected>60 min</option>
+              <option>90 min</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Procedure</label>
+          <select class="form-input">
+            <option>D0120 — Periodic Oral Exam</option>
+            <option>D0150 — Comprehensive Oral Exam</option>
+            <option>D1110 — Prophylaxis (Adult)</option>
+            <option>D2391 — Resin Composite (1 surface)</option>
+            <option>D2740 — Crown — Porcelain/Ceramic</option>
+            <option>D7140 — Extraction, Erupted Tooth</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Notes</label>
+          <textarea class="form-input form-textarea" placeholder="Any special notes..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="modalCancel">Cancel</button>
+        <button class="btn-primary">Schedule Appointment</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

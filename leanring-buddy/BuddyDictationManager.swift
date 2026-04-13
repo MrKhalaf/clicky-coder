@@ -464,11 +464,21 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             print("🎙️ BuddyDictationManager: recognition session started")
         } catch {
             isPreparingToRecord = false
-            lastErrorMessage = userFacingErrorMessage(
-                from: error,
-                fallback: "couldn't start voice input. try again."
-            )
-            print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
+
+            let isCancellation = Task.isCancelled
+                || (error as? URLError)?.code == .cancelled
+                || (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled
+
+            if isCancellation {
+                print("🎙️ BuddyDictationManager: start cancelled (session setup interrupted)")
+            } else {
+                lastErrorMessage = userFacingErrorMessage(
+                    from: error,
+                    fallback: "couldn't start voice input. try again."
+                )
+                print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
+            }
+
             resetSessionState()
         }
     }
